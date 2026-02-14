@@ -1,0 +1,9 @@
+{
+    "expected_version":  0,
+    "events":  [
+                   {
+                       "type":  "COMBAT_STARTED"
+                   }
+               ],
+    "ruleset":  "default"
+}

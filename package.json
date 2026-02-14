@@ -1,0 +1,39 @@
+{
+  "name": "sss-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev:docker": "sh -c \"if docker ps --format '{{.Names}}' | grep -qx sss-postgres-test; then :; elif docker ps -a --format '{{.Names}}' | grep -qx sss-postgres-test; then docker start sss-postgres-test >/dev/null; else docker run --name sss-postgres-test -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=sss_test -p 5433:5432 -d postgres:14 >/dev/null; fi; until docker exec sss-postgres-test pg_isready -U postgres -d sss_test >/dev/null 2>&1; do sleep 1; done; docker exec -i sss-postgres-test psql -U postgres -d sss_test < ./sql/001_init.sql >/dev/null; npm run dev\"",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pg:up": "docker compose -f docker-compose.pg.yml up -d",
+    "pg:down": "docker compose -f docker-compose.pg.yml down -v",
+    "pg:init": "docker exec -i sss-postgres psql -U postgres -d sss_test < ./sql/001_init.sql",
+    "test:pg": "RUN_PG_TESTS=true PGHOST=127.0.0.1 PGPORT=5432 PGUSER=postgres PGPASSWORD=postgres PGDATABASE=sss_test vitest run tests/sss.postgres.repository.versioning.test.ts",
+    "test:pg:tc": "RUN_PG_TESTS_TC=true vitest run tests/sss.postgres.repository.versioning.test.ts",
+    "test:pg:smoke:tc": "RUN_PG_SMOKE=true RUN_PG_SMOKE_TC=true vitest run tests/sss.pg_smoke.e2e.test.ts",
+    "test:pg:smoke": "RUN_PG_SMOKE=true PGHOST=127.0.0.1 PGPORT=5432 PGUSER=postgres PGPASSWORD=postgres PGDATABASE=sss_test vitest run tests/sss.pg_smoke.e2e.test.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "fastify": "^5.7.1",
+    "pg": "^8.17.2",
+    "sss-rule-engine": "file:../rule-engine-backend"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.16.0",
+    "testcontainers": "^10.28.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  }
+}
