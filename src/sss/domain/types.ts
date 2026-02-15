@@ -39,12 +39,22 @@ export interface CombatState {
 
   active_entity: EntityId | null;
 
-  phase: "START" | "ACTION" | "END";
+  phase: "START" | "ACTION_WINDOW" | "ACTION" | "END";
 
   /**
-   * Number of actions used by the active entity in the current turn.
+   * True when the actor consumed the per-turn action (ATTACK or PASS).
    */
-  turn_actions_used: number;
+  action_used: boolean;
+
+  /**
+   * Remaining movement in grid steps (default 6).
+   */
+  movement_remaining: number;
+
+  /**
+   * Legacy compatibility field (replay/migration fallback).
+   */
+  turn_actions_used?: number;
 }
 
 export interface MapState {
@@ -210,7 +220,7 @@ export type DomainEvent =
   | ActionProposedEvent
   | ActionResolvedEvent;
 
-export type ActionType = "MOVE" | "ATTACK" | "ROLL_INITIATIVE";
+export type ActionType = "MOVE" | "ATTACK" | "PASS" | "ROLL_INITIATIVE";
 
 export type ActionOutcome =
   | { type: "MOVE_APPLIED"; entityId: EntityId; to: Point }

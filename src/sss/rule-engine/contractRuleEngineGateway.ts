@@ -28,11 +28,19 @@ export class ContractRuleEngineGateway implements RuleEngineGateway {
   }
 
   evaluate(snapshot: Snapshot, event: DomainEvent): RuleEngineDecision {
+    const actionType =
+      (event.type === "ACTION_PROPOSED" && (event.payload as any)?.actionType) ??
+      (event.type === "ACTION_PROPOSED" && (event.payload as any)?.action?.type);
+
     if (
       event.type === "ACTION_PROPOSED" &&
-      event.payload.actionType === "ROLL_INITIATIVE"
+      actionType === "ROLL_INITIATIVE"
     ) {
-      const actor = event.payload.actorEntityId;
+      const actor =
+        (event.payload as any)?.actorEntityId ??
+        (event.payload as any)?.actor_entity_id ??
+        (event.payload as any)?.actor_entity ??
+        (event.payload as any)?.actorId;
       if (!actor) return { allowed: false, code: "DENY_INITIATIVE" };
       if (snapshot.mode !== "COMBAT") return { allowed: false, code: "DENY_INITIATIVE" };
       if (!snapshot.combat?.active) return { allowed: false, code: "DENY_INITIATIVE" };
@@ -107,7 +115,11 @@ export class ContractRuleEngineGateway implements RuleEngineGateway {
         phase: this.mapPhase(sss.combat?.phase, initiativeSet),
         activeEntityId: sss.combat?.active_entity ?? undefined,
         initiativeSet,
-        turnActionsUsed: sss.combat?.turn_actions_used ?? 0,
+        turnActionsUsed: sss.combat?.turn_actions_used,
+        actionUsed:
+          sss.combat?.action_used ??
+          ((sss.combat?.turn_actions_used ?? 0) >= 1),
+        movementRemaining: sss.combat?.movement_remaining ?? 6,
       },
       entities: this.mapEntities(sss),
     };
@@ -121,11 +133,11 @@ export class ContractRuleEngineGateway implements RuleEngineGateway {
   private mapPhase(
     phase: Snapshot["combat"]["phase"],
     initiativeSet: boolean
-  ): "INIT" | "ACTION" | "END" {
-    // SSS: "START" | "ACTION" | "END"
-    // RE:  "INIT"  | "ACTION" | "END"
-    if (phase === "START") return initiativeSet ? "ACTION" : "INIT";
-    if (phase === "ACTION") return "ACTION";
+  ): "INIT" | "ACTION_WINDOW" | "END" {
+    // SSS: "START" | "ACTION_WINDOW" | "ACTION"(legacy) | "END"
+    // RE:  "INIT"  | "ACTION_WINDOW" | "END"
+    if (phase === "START") return initiativeSet ? "ACTION_WINDOW" : "INIT";
+    if (phase === "ACTION" || phase === "ACTION_WINDOW") return "ACTION_WINDOW";
     return "END";
   }
 
@@ -155,7 +167,10 @@ export class ContractRuleEngineGateway implements RuleEngineGateway {
       }
 
       case "ADVANCE_TURN": {
-        const actor = event.payload.actorEntityId;
+        const actor =
+          (event.payload as any)?.actorEntityId ??
+          (event.payload as any)?.entityId ??
+          (event.payload as any)?.entity_id;
 
         if (!actor) {
           return null;
@@ -169,15 +184,22 @@ export class ContractRuleEngineGateway implements RuleEngineGateway {
 
       case "ACTION_PROPOSED": {
         const p = event.payload as any;
-        if (!p?.actorEntityId) return null;
+        const actorEntityId =
+          p?.actorEntityId ??
+          p?.actor_entity_id ??
+          p?.actor_entity ??
+          p?.actorId ??
+          p?.actor?.entityId;
+        const actionType = p?.actionType ?? p?.action?.type;
+        if (!actorEntityId || !actionType) return null;
 
         return {
           type: "ACTION_PROPOSED",
-          actorEntityId: p.actorEntityId,
+          actorEntityId,
           payload: {
-            actionType: p.actionType,
-            destination: p.destination,
-            targetEntityId: p.targetEntityId,
+            actionType,
+            destination: p.destination ?? p.action?.destination,
+            targetEntityId: p.targetEntityId ?? p.action?.targetEntityId,
           },
         };
       }

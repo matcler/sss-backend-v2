@@ -42,6 +42,23 @@ npm start
 
 All'avvio il server logga la connessione DB con password mascherata.
 
+## DEV seed combat
+
+Endpoint disponibile solo quando `NODE_ENV != production`:
+
+- `POST /sessions/:id/dev/seed-combat`
+
+Smoke manuale:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/sessions -H "content-type: application/json" -d '{"ruleset":"5e"}'
+# prendi session_id
+
+curl -sS -X POST http://127.0.0.1:3000/sessions/<SID>/dev/seed-combat -H "content-type: application/json" -d '{}'
+
+curl -sS http://127.0.0.1:3000/sessions/<SID>/state
+```
+
 I contract test Postgres **non creano schema via DDL**: assumono che lo schema esista già.  
 Lo schema versionato è in: `sql/001_init.sql`.
 “Versioning eventi: stream vuoto → currentVersion=0 → primo evento=1 (congelato)”

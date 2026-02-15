@@ -18,9 +18,11 @@ function makeBaseSnapshot(overrides?: Partial<Snapshot>): Snapshot {
     mode: "COMBAT",
     combat: {
       active: true,
-      phase: "ACTION", // SSS: START | ACTION | END
+      phase: "ACTION_WINDOW", // SSS: START | ACTION_WINDOW | END
       active_entity: "e1",
       initiative: ["e1", "e2"],
+      action_used: false,
+      movement_remaining: 6,
       turn_actions_used: 0,
     },
     entities: {
@@ -95,7 +97,7 @@ describe("RE contract adapter (SSS -> RE contract) via ContractRuleEngineGateway
     // Snapshot mapping sanity
     expect(reSnap.mode).toBe("COMBAT");
     expect(reSnap.combat.active).toBe(true);
-    expect(reSnap.combat.phase).toBe("ACTION");
+    expect(reSnap.combat.phase).toBe("ACTION_WINDOW");
     expect(reSnap.combat.activeEntityId).toBe("e1");
     expect(reSnap.combat.initiativeSet).toBe(true);
 

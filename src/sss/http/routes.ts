@@ -1,6 +1,7 @@
 ﻿import { FastifyInstance } from "fastify";
 import { SssService } from "../service/sss.service";
 import { SssError, ValidationError } from "../domain/errors";
+import { env } from "../../config/env";
 
 export async function sssRoutes(app: FastifyInstance, opts: { sss: SssService }) {
   const sss = opts.sss;
@@ -9,6 +10,24 @@ export async function sssRoutes(app: FastifyInstance, opts: { sss: SssService })
     try {
       const body = req.body as { ruleset?: string } | undefined;
       const result = await sss.createSession(body?.ruleset ?? "5e");
+      return reply.status(200).send({ ok: true, ...result });
+    } catch (e: any) {
+      if (e instanceof SssError) {
+        return reply.status(e.statusCode).send({ ok: false, code: e.code, message: e.message });
+      }
+      req.log.error(e);
+      return reply.status(500).send({ ok: false, code: "INTERNAL", message: "internal error" });
+    }
+  });
+
+  app.post("/sessions/:id/dev/seed-combat", async (req, reply) => {
+    try {
+      if (env.NODE_ENV === "production") {
+        return reply.status(404).send({ ok: false, code: "NOT_FOUND", message: "not found" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body as any) ?? {};
+      const result = await sss.devSeedCombat(id, body);
       return reply.status(200).send({ ok: true, ...result });
     } catch (e: any) {
       if (e instanceof SssError) {

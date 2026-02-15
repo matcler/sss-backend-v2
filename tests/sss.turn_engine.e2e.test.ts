@@ -4,7 +4,7 @@ import { SssService } from "../src/sss/service/sss.service";
 import { InMemorySssRepository } from "../src/sss/db/__mocks__/inMemorySssRepository";
 import { ContractRuleEngineGateway } from "../src/sss/rule-engine/contractRuleEngineGateway";
 import { allowAllRuleEngine } from "../src/sss/rule-engine/allowAllRuleEngine";
-import { ruleEngine } from "sss-rule-engine";
+import { ruleEngine } from "../src/sss/rule-engine/localContractRuleEngine";
 import { makeInitialSnapshot } from "../src/sss/domain/snapshot";
 import { reduce } from "../src/sss/domain/reducer";
 import type { DomainEvent } from "../src/sss/domain/types";
@@ -71,6 +71,20 @@ async function setupCombat(
   return state;
 }
 
+async function consumeActionWithPass(svc: SssService, sessionId: string, state: any): Promise<any> {
+  const active = state.combat.active_entity;
+  if (!active) return state;
+  return svc.appendEvents(sessionId, {
+    expected_version: state.meta.version,
+    events: [
+      {
+        type: "ACTION_PROPOSED",
+        payload: { actorEntityId: active, actionType: "PASS" },
+      },
+    ],
+  });
+}
+
 describe("E2E: minimal C3 turn engine", () => {
   it("advance e1->e2 emits TURN_ENDED + TURN_STARTED", async () => {
     const repo = new InMemorySssRepository();
@@ -80,6 +94,7 @@ describe("E2E: minimal C3 turn engine", () => {
     let state = await setupCombat(svc, sessionId, ["e1", "e2"]);
     const active = state.combat.active_entity;
     if (!active) throw new Error("active_entity missing");
+    state = await consumeActionWithPass(svc, sessionId, state);
 
     state = await svc.appendEvents(sessionId, {
       expected_version: state.meta.version,
@@ -88,7 +103,7 @@ describe("E2E: minimal C3 turn engine", () => {
 
     const events = await svc.getEvents(sessionId);
     const tail = events.slice(-3).map((e) => e.type);
-    expect(tail).toEqual(["ADVANCE_TURN", "TURN_ENDED", "TURN_STARTED"]);
+    expect(tail).toEqual(["ACTION_RESOLVED", "ADVANCE_TURN", "TURN_STARTED"]);
 
     expect(state.combat.active_entity).toBe("e2");
   });
@@ -99,11 +114,13 @@ describe("E2E: minimal C3 turn engine", () => {
     const sessionId = "turn-engine-wrap";
 
     let state = await setupCombat(svc, sessionId, ["e1", "e2"]);
+    state = await consumeActionWithPass(svc, sessionId, state);
 
     state = await svc.appendEvents(sessionId, {
       expected_version: state.meta.version,
       events: [{ type: "ADVANCE_TURN", payload: { actorEntityId: "e1" } }],
     });
+    state = await consumeActionWithPass(svc, sessionId, state);
 
     state = await svc.appendEvents(sessionId, {
       expected_version: state.meta.version,
@@ -121,6 +138,7 @@ describe("E2E: minimal C3 turn engine", () => {
     const sessionId = "turn-engine-skip-dead";
 
     let state = await setupCombat(svc, sessionId, ["e1", "e2", "e3"], { e2: 0 });
+    state = await consumeActionWithPass(svc, sessionId, state);
 
     state = await svc.appendEvents(sessionId, {
       expected_version: state.meta.version,
@@ -161,17 +179,50 @@ describe("E2E: minimal C3 turn engine", () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it("accepts ADVANCE_TURN with empty payload by inferring active_entity", async () => {
+    const repo = new InMemorySssRepository();
+    const gateway = new ContractRuleEngineGateway(ruleEngine);
+    const svc = new SssService(repo, gateway, 999_999);
+    const sessionId = "turn-engine-infer-actor";
+
+    let state = await setupCombat(svc, sessionId, ["e1", "e2"]);
+
+    state = await svc.appendEvents(sessionId, {
+      expected_version: state.meta.version,
+      events: [
+        {
+          type: "ACTION_PROPOSED",
+          payload: { actorEntityId: "e1", actionType: "PASS" },
+        },
+      ],
+    });
+    expect(state.combat.phase).toBe("END");
+
+    state = await svc.appendEvents(sessionId, {
+      expected_version: state.meta.version,
+      events: [{ type: "ADVANCE_TURN", payload: {} } as any],
+    });
+
+    expect(state.combat.active_entity).toBe("e2");
+    expect(state.combat.phase).toBe("ACTION_WINDOW");
+    expect(state.combat.action_used).toBe(false);
+    expect(state.combat.movement_remaining).toBe(6);
+    expect(state.combat.turn_actions_used).toBe(0);
+  });
+
   it("replay determinism on round/cursor/active_entity", async () => {
     const repo = new InMemorySssRepository();
     const svc = new SssService(repo, allowAllRuleEngine, 999_999);
     const sessionId = "turn-engine-replay";
 
     let state = await setupCombat(svc, sessionId, ["e1", "e2", "e3"], { e2: 0 });
+    state = await consumeActionWithPass(svc, sessionId, state);
 
     state = await svc.appendEvents(sessionId, {
       expected_version: state.meta.version,
       events: [{ type: "ADVANCE_TURN", payload: { actorEntityId: "e1" } }],
     });
+    state = await consumeActionWithPass(svc, sessionId, state);
 
     state = await svc.appendEvents(sessionId, {
       expected_version: state.meta.version,

@@ -21,6 +21,8 @@ export function makeInitialSnapshot(
       cursor: 0,
       active_entity: null,
       phase: "START",
+      action_used: false,
+      movement_remaining: 6,
       turn_actions_used: 0,
     },
     map: {

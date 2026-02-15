@@ -1,3 +1,3 @@
-export * from "./ruleEngineAdapter";
-export * from "./snapshotMapper";
-export * from "./eventMapper";
+export * from "./ruleEngine.adapter";
+export * from "./snapshot.mapper";
+export * from "./event.mapper";

@@ -5,7 +5,7 @@ import { allowAllRuleEngine } from "../src/sss/rule-engine/allowAllRuleEngine";
 import type { RuleEngineGateway } from "../src/sss/rule-engine/ruleEngineGateway";
 import { SeededDiceRoller } from "../src/sss/adapters/dice/seededDiceRoller";
 import { ContractRuleEngineGateway } from "../src/sss/rule-engine/contractRuleEngineGateway";
-import { ruleEngine } from "sss-rule-engine";
+import { ruleEngine } from "../src/sss/rule-engine/localContractRuleEngine";
 import type { EntityState } from "../src/sss/domain/types";
 
 describe("ACTION_PROPOSED -> ACTION_RESOLVED (E2E)", () => {
@@ -451,7 +451,7 @@ describe("C2 Initiative (E2E)", () => {
     expect(state.combat.initiative).toEqual(expectedOrder);
     expect(state.combat.active_entity).toBe(expectedOrder[0]);
     expect(state.combat.cursor).toBe(0);
-    expect(state.combat.phase).toBe("ACTION");
+    expect(state.combat.phase).toBe("ACTION_WINDOW");
   });
 
   it("Replay determinism: rebuilding state yields same initiative order and active_entity", async () => {

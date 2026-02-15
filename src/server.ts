@@ -4,7 +4,7 @@ import { env, getMaskedDatabaseLogInfo } from "./config/env";
 import { SssService } from "./sss/service/sss.service";
 import { sssRoutes } from "./sss/http/routes";
 import { ContractRuleEngineGateway } from "./sss/rule-engine/contractRuleEngineGateway";
-import { ruleEngine } from "sss-rule-engine";
+import { ruleEngine } from "./sss/rule-engine/localContractRuleEngine";
 import { createRepositoryFromEnv } from "./sss/db/repoFactory";
 
 async function buildServer() {

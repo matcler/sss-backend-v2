@@ -155,6 +155,20 @@ export function resolveAction(
       break;
     }
 
+    case "PASS": {
+      resolvedEvents.push({
+        type: "ACTION_RESOLVED",
+        payload: {
+          proposedEventVersion:
+            typeof proposed.version === "number" ? proposed.version : undefined,
+          actorEntityId,
+          actionType,
+          outcomes: [],
+        },
+      });
+      break;
+    }
+
     case "ROLL_INITIATIVE": {
       const actor = snapshot.entities[actorEntityId];
       if (!actor) throw new DomainError(`actor not found: ${actorEntityId}`);

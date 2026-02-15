@@ -1,7 +1,13 @@
 import { SssRepository } from "../db/repository";
 import { makeInitialSnapshot, shouldTakeSnapshot } from "../domain/snapshot";
 import { reduce } from "../domain/reducer";
-import { Snapshot, DomainEvent, ActionProposedEvent, InitiativeRollPayload } from "../domain/types";
+import {
+  Snapshot,
+  DomainEvent,
+  ActionProposedEvent,
+  InitiativeRollPayload,
+  InitiativeEntry,
+} from "../domain/types";
 import { NotFoundError, SnapshotMissingError, ValidationError } from "../domain/errors";
 import { env } from "../../config/env";
 import type { RuleEngineGateway } from "../rule-engine/ruleEngineGateway";
@@ -12,6 +18,32 @@ import { isCombatOver } from "../domain/combatEnd";
 export interface AppendEventsRequest {
   expected_version: number;
   events: DomainEvent[];
+}
+
+export interface DevSeedCombatOptions {
+  actorId?: string;
+  enemyId?: string;
+  seed?: number;
+  positions?: {
+    actor?: { x: number; y: number };
+    enemy?: { x: number; y: number };
+  };
+}
+
+export interface DevSeedCombatResult {
+  session_id: string;
+  version: number;
+  mode: "COMBAT";
+  phase: "ACTION_WINDOW";
+  active_entity: string;
+}
+
+export interface ReplayResult {
+  from: number | null;
+  to: number | null;
+  count: number;
+  base_version: number;
+  state: Snapshot;
 }
 
 export class SssService {
@@ -52,54 +84,7 @@ export class SssService {
   // READ
   // ============================================================
   async getState(session_id: string): Promise<Snapshot> {
-    return this.repo.withTx(async (client) => {
-      const exists = await this.sessionExistsCompat(client, session_id);
-      if (!exists) {
-        throw new NotFoundError(`session not found: ${session_id}`);
-      }
-
-      let base = await this.repo.getLatestSnapshot(client, session_id);
-      const persisted = await this.repo.getEventsAfter(
-        client,
-        session_id,
-        base?.meta.version ?? 0
-      );
-
-      const domainEvents = persisted.map(
-        (e) =>
-          ({
-            type: e.event_type,
-            payload: e.event_payload,
-            version: e.version,
-          } as DomainEvent)
-      );
-
-      if (!base) {
-        const ruleset = await this.repo.getSessionRuleset(client, session_id);
-        if (ruleset) {
-          base = makeInitialSnapshot(session_id, String(ruleset));
-        } else {
-          // Fallback for event-only sessions where sessions row is missing.
-          const createdEvent = domainEvents.find(
-            (event) =>
-              event.type === "SESSION_CREATED" &&
-              typeof (event.payload as any)?.ruleset === "string"
-          );
-          if (createdEvent) {
-            base = makeInitialSnapshot(
-              session_id,
-              String((createdEvent.payload as any).ruleset)
-            );
-          } else {
-            throw new SnapshotMissingError(
-              `snapshot missing and ruleset unavailable for session: ${session_id}`
-            );
-          }
-        }
-      }
-
-      return reduce(base, domainEvents);
-    });
+    return this.repo.withTx((client) => this.getStateInTx(client, session_id));
   }
 
   // ============================================================
@@ -109,142 +94,9 @@ export class SssService {
     session_id: string,
     req: AppendEventsRequest
   ): Promise<Snapshot> {
-    return this.repo.withTx(async (client) => {
-      let snap = await this.repo.getLatestSnapshot(client, session_id);
-
-      // ---- bootstrap session ----
-      if (!snap) {
-        if (req.expected_version !== 0) {
-          throw new NotFoundError(`session not found: ${session_id}`);
-        }
-
-        const created = req.events.find((e) => e.type === "SESSION_CREATED");
-        if (!created) {
-          throw new ValidationError(
-            "first append must include SESSION_CREATED"
-          );
-        }
-
-        const ruleset = (created.payload as any)?.ruleset ?? "unknown";
-
-        await this.repo.insertSessionIfMissing(
-          client,
-          session_id,
-          String(ruleset)
-        );
-
-        snap = makeInitialSnapshot(session_id, String(ruleset));
-        await this.repo.saveSnapshot(client, snap);
-      }
-
-      // ---- catch-up ----
-      const past = await this.repo.getEventsAfter(
-        client,
-        session_id,
-        snap.meta.version
-      );
-
-      const pastDomainEvents = past.map(
-        (e) =>
-          ({
-            type: e.event_type,
-            payload: e.event_payload,
-            version: e.version,
-          } as DomainEvent)
-      );
-
-      const baseSnap = reduce(snap, pastDomainEvents);
-      let lastAiRoll = findLastAiRoll(pastDomainEvents, SssService.AI_ENTITY_ID);
-
-      // ---- optimistic concurrency ----
-      if (req.expected_version !== baseSnap.meta.version) {
-        throw new ValidationError(
-          `version mismatch: expected ${req.expected_version}, current ${baseSnap.meta.version}`
-        );
-      }
-
-      // ---- rule engine + domain validation BEFORE persist ----
-      let nextSnap = baseSnap;
-      const toPersist: DomainEvent[] = [];
-      const applyAndPersist = (events: DomainEvent | DomainEvent[]) => {
-        const list = Array.isArray(events) ? events : [events];
-        for (const ev of list) {
-          nextSnap = reduce(nextSnap, [ev]);
-          toPersist.push(ev);
-          if (ev.type === "TURN_STARTED") {
-            nextSnap = applyAutoSkipDead(nextSnap, toPersist);
-            nextSnap = applyAutoEndCombat(nextSnap, toPersist);
-          }
-        }
-      };
-
-      for (const ev of req.events) {
-        const decision = this.ruleEngine.evaluate(nextSnap, ev);
-        if (!decision.allowed) {
-          throw new ValidationError(`rule denied: ${decision.code}`);
-        }
-
-        if (ev.type === "INITIATIVE_SET") {
-          this.assertInitiativeSetMatchesAiRoll(
-            nextSnap,
-            ev,
-            lastAiRoll,
-            SssService.AI_ENTITY_ID
-          );
-        }
-
-        applyAndPersist(ev);
-
-        if (ev.type === "ADVANCE_TURN") {
-          const derived = buildAdvanceTurnDerivedEvents(nextSnap, ev);
-          applyAndPersist(derived);
-        } else if (ev.type === "ACTION_PROPOSED") {
-          const resolvedEvents = resolveAction(nextSnap, ev as ActionProposedEvent);
-          applyAndPersist(resolvedEvents);
-          const lastResolvedAiRoll = findLastAiRoll(resolvedEvents, SssService.AI_ENTITY_ID);
-          if (lastResolvedAiRoll) lastAiRoll = lastResolvedAiRoll;
-        } else if (ev.type === "INITIATIVE_ROLLED" && ev.payload.entityId === SssService.AI_ENTITY_ID) {
-          lastAiRoll = ev.payload;
-        }
-
-        if (ev.type === "INITIATIVE_SET") {
-          const activeEntityId = nextSnap.combat.active_entity;
-          if (activeEntityId) {
-            const turnStarted: DomainEvent = {
-              type: "TURN_STARTED",
-              payload: { entityId: activeEntityId, round: nextSnap.combat.round },
-            };
-            applyAndPersist(turnStarted);
-          }
-        }
-
-        nextSnap = applyAutoSkipDead(nextSnap, toPersist);
-        nextSnap = applyAutoEndCombat(nextSnap, toPersist);
-      }
-
-      // ---- persist ----
-      const inserted = await this.repo.appendEvents(
-        client,
-        session_id,
-        req.expected_version,
-        toPersist
-      );
-
-      const lastVersion =
-        inserted.length > 0
-          ? inserted[inserted.length - 1].version
-          : baseSnap.meta.version;
-
-      nextSnap.meta.version = lastVersion;
-
-      const lastType = toPersist.at(-1)?.type;
-
-      if (shouldTakeSnapshot(lastVersion, this.snapshotEvery, lastType)) {
-        await this.repo.saveSnapshot(client, nextSnap);
-      }
-
-      return nextSnap;
-    });
+    return this.repo.withTx((client) =>
+      this.appendEventsInTx(client, session_id, req, { forceSnapshot: false })
+    );
   }
 
   // ============================================================
@@ -304,6 +156,139 @@ export class SssService {
     });
   }
 
+  async replay(session_id: string, from?: number, to?: number): Promise<ReplayResult> {
+    return this.repo.withTx(async (client) => {
+      const exists = await this.sessionExistsCompat(client, session_id);
+      if (!exists) {
+        throw new NotFoundError(`session not found: ${session_id}`);
+      }
+
+      const replayFrom = from ?? 1;
+      const replayTo = to;
+
+      const before =
+        replayFrom > 1
+          ? await this.repo.getEventsInRange(client, session_id, 1, replayFrom - 1)
+          : [];
+      const range = await this.repo.getEventsInRange(client, session_id, replayFrom, replayTo);
+
+      const toDomain = (rows: Awaited<ReturnType<SssRepository["getEventsInRange"]>>): DomainEvent[] =>
+        rows.map(
+          (e) =>
+            ({
+              type: e.event_type,
+              payload: e.event_payload,
+              version: e.version,
+            } as DomainEvent)
+        );
+
+      const beforeEvents = toDomain(before);
+      const replayEvents = toDomain(range);
+
+      const ruleset = await this.repo.getSessionRuleset(client, session_id);
+      const base = ruleset
+        ? makeInitialSnapshot(session_id, String(ruleset))
+        : makeInitialSnapshot(session_id, "unknown");
+      const baseState = reduce(base, beforeEvents);
+      const state = reduce(baseState, replayEvents);
+
+      return {
+        from: from ?? null,
+        to: to ?? null,
+        count: range.length,
+        base_version: baseState.meta.version,
+        state,
+      };
+    });
+  }
+
+  async devSeedCombat(
+    session_id: string,
+    opts: DevSeedCombatOptions = {}
+  ): Promise<DevSeedCombatResult> {
+    return this.repo.withTx(async (client) => {
+      const current = await this.getStateInTx(client, session_id);
+      const actorId = opts.actorId?.trim() || "e1";
+      const enemyId = opts.enemyId?.trim() || "m1";
+      if (actorId === enemyId) {
+        throw new ValidationError("actorId and enemyId must be different");
+      }
+
+      if (isCombatReady(current, actorId)) {
+        return {
+          session_id,
+          version: current.meta.version,
+          mode: "COMBAT",
+          phase: "ACTION_WINDOW",
+          active_entity: actorId,
+        };
+      }
+
+      const actorPosition = opts.positions?.actor ?? { x: 0, y: 0 };
+      const enemyPosition = opts.positions?.enemy ?? { x: 1, y: 0 };
+      const initiativeEntries: InitiativeEntry[] = [
+        { entityId: actorId, total: 15, source: "HUMAN_DECLARED", tiebreak: "TOTAL" as const },
+        { entityId: enemyId, total: 10, source: "HUMAN_DECLARED", tiebreak: "TOTAL" as const },
+      ];
+      const seedEvents: DomainEvent[] = [{ type: "RNG_SEEDED", payload: { seed: Number(opts.seed ?? 1) } }];
+      if (!current.entities[actorId]) {
+        seedEvents.push({
+          type: "ENTITY_ADDED",
+          payload: {
+            entity_id: actorId,
+            name: actorId,
+            hp: 20,
+            zone: null,
+            position: actorPosition,
+          },
+        });
+      }
+      if (!current.entities[enemyId]) {
+        seedEvents.push({
+          type: "ENTITY_ADDED",
+          payload: {
+            entity_id: enemyId,
+            name: enemyId,
+            hp: 20,
+            zone: null,
+            position: enemyPosition,
+          },
+        });
+      }
+      seedEvents.push(
+        { type: "MODE_SET", payload: { mode: "COMBAT" } },
+        { type: "COMBAT_STARTED", payload: { participant_ids: [actorId, enemyId] } },
+        {
+          type: "INITIATIVE_SET",
+          payload: { entries: initiativeEntries, order: [actorId, enemyId] },
+        }
+      );
+
+      const next = await this.appendEventsInTx(
+        client,
+        session_id,
+        { expected_version: current.meta.version, events: seedEvents },
+        { forceSnapshot: true }
+      );
+
+      if (!isCombatReady(next, actorId)) {
+        throw new ValidationError("dev seed failed to reach COMBAT/ACTION_WINDOW with active actor");
+      }
+
+      console.info(
+        `[dev-seed-combat] session=${session_id} version=${next.meta.version} active=${actorId} phase=ACTION_WINDOW`
+      );
+
+      return {
+        session_id,
+        version: next.meta.version,
+        mode: "COMBAT",
+        phase: "ACTION_WINDOW",
+        active_entity: actorId,
+      };
+    });
+  }
+
   private async sessionExistsCompat(client: any, session_id: string): Promise<boolean> {
     const repoAny = this.repo as any;
     if (typeof repoAny.sessionExists === "function") {
@@ -326,6 +311,167 @@ export class SssService {
     }
 
     return false;
+  }
+
+  private async getStateInTx(client: any, session_id: string): Promise<Snapshot> {
+    const exists = await this.sessionExistsCompat(client, session_id);
+    if (!exists) {
+      throw new NotFoundError(`session not found: ${session_id}`);
+    }
+
+    let base = await this.repo.getLatestSnapshot(client, session_id);
+    const persisted = await this.repo.getEventsAfter(client, session_id, base?.meta.version ?? 0);
+    const domainEvents = persisted.map(
+      (e) =>
+        ({
+          type: e.event_type,
+          payload: e.event_payload,
+          version: e.version,
+        } as DomainEvent)
+    );
+
+    if (!base) {
+      const ruleset = await this.repo.getSessionRuleset(client, session_id);
+      if (ruleset) {
+        base = makeInitialSnapshot(session_id, String(ruleset));
+      } else {
+        const createdEvent = domainEvents.find(
+          (event) =>
+            event.type === "SESSION_CREATED" &&
+            typeof (event.payload as any)?.ruleset === "string"
+        );
+        if (createdEvent) {
+          base = makeInitialSnapshot(session_id, String((createdEvent.payload as any).ruleset));
+        } else {
+          throw new SnapshotMissingError(
+            `snapshot missing and ruleset unavailable for session: ${session_id}`
+          );
+        }
+      }
+    }
+
+    return reduce(base, domainEvents);
+  }
+
+  private async appendEventsInTx(
+    client: any,
+    session_id: string,
+    req: AppendEventsRequest,
+    options: { forceSnapshot: boolean }
+  ): Promise<Snapshot> {
+    let snap = await this.repo.getLatestSnapshot(client, session_id);
+
+    if (!snap) {
+      if (req.expected_version !== 0) {
+        throw new NotFoundError(`session not found: ${session_id}`);
+      }
+
+      const created = req.events.find((e) => e.type === "SESSION_CREATED");
+      if (!created) {
+        throw new ValidationError("first append must include SESSION_CREATED");
+      }
+
+      const ruleset = (created.payload as any)?.ruleset ?? "unknown";
+      await this.repo.insertSessionIfMissing(client, session_id, String(ruleset));
+      snap = makeInitialSnapshot(session_id, String(ruleset));
+      await this.repo.saveSnapshot(client, snap);
+    }
+
+    const past = await this.repo.getEventsAfter(client, session_id, snap.meta.version);
+    const pastDomainEvents = past.map(
+      (e) =>
+        ({
+          type: e.event_type,
+          payload: e.event_payload,
+          version: e.version,
+        } as DomainEvent)
+    );
+
+    const baseSnap = reduce(snap, pastDomainEvents);
+    let lastAiRoll = findLastAiRoll(pastDomainEvents, SssService.AI_ENTITY_ID);
+
+    if (req.expected_version !== baseSnap.meta.version) {
+      throw new ValidationError(
+        `version mismatch: expected ${req.expected_version}, current ${baseSnap.meta.version}`
+      );
+    }
+
+    let currentSnap = baseSnap;
+    const toPersist: DomainEvent[] = [];
+    const applyAndPersist = (
+      snapshot: Snapshot,
+      events: DomainEvent | DomainEvent[]
+    ): Snapshot => {
+      let updated = snapshot;
+      const list = Array.isArray(events) ? events : [events];
+      for (const ev of list) {
+        updated = reduce(updated, [ev]);
+        toPersist.push(ev);
+        if (ev.type === "TURN_STARTED") {
+          updated = applyAutoSkipDead(updated, toPersist);
+          updated = applyAutoEndCombat(updated, toPersist);
+        }
+      }
+      return updated;
+    };
+
+    for (const incomingEvent of req.events) {
+      const ev = normalizeIncomingEvent(incomingEvent, currentSnap);
+      const decision = this.ruleEngine.evaluate(currentSnap, ev);
+      if (!decision.allowed) {
+        throw new ValidationError(`rule denied: ${decision.code}`);
+      }
+
+      if (ev.type === "INITIATIVE_SET") {
+        this.assertInitiativeSetMatchesAiRoll(
+          currentSnap,
+          ev,
+          lastAiRoll,
+          SssService.AI_ENTITY_ID
+        );
+      }
+
+      let nextSnap = applyAndPersist(currentSnap, ev);
+
+      if (ev.type === "ADVANCE_TURN") {
+        const derived = buildAdvanceTurnDerivedEvents(nextSnap, ev);
+        nextSnap = applyAndPersist(nextSnap, derived);
+      } else if (ev.type === "ACTION_PROPOSED") {
+        const resolvedEvents = resolveAction(nextSnap, ev as ActionProposedEvent);
+        nextSnap = applyAndPersist(nextSnap, resolvedEvents);
+        const lastResolvedAiRoll = findLastAiRoll(resolvedEvents, SssService.AI_ENTITY_ID);
+        if (lastResolvedAiRoll) lastAiRoll = lastResolvedAiRoll;
+      } else if (ev.type === "INITIATIVE_ROLLED" && ev.payload.entityId === SssService.AI_ENTITY_ID) {
+        lastAiRoll = ev.payload;
+      }
+
+      if (ev.type === "INITIATIVE_SET") {
+        const activeEntityId = nextSnap.combat.active_entity;
+        if (activeEntityId) {
+          const turnStarted: DomainEvent = {
+            type: "TURN_STARTED",
+            payload: { entityId: activeEntityId, round: nextSnap.combat.round },
+          };
+          nextSnap = applyAndPersist(nextSnap, turnStarted);
+        }
+      }
+
+      nextSnap = applyAutoSkipDead(nextSnap, toPersist);
+      nextSnap = applyAutoEndCombat(nextSnap, toPersist);
+      currentSnap = nextSnap;
+    }
+
+    const inserted = await this.repo.appendEvents(client, session_id, req.expected_version, toPersist);
+    const lastVersion =
+      inserted.length > 0 ? inserted[inserted.length - 1].version : baseSnap.meta.version;
+    currentSnap.meta.version = lastVersion;
+
+    const lastType = toPersist.at(-1)?.type;
+    if (options.forceSnapshot || shouldTakeSnapshot(lastVersion, this.snapshotEvery, lastType)) {
+      await this.repo.saveSnapshot(client, currentSnap);
+    }
+
+    return currentSnap;
   }
 
   private assertInitiativeSetMatchesAiRoll(
@@ -414,6 +560,7 @@ function buildAdvanceTurnDerivedEvents(
 
   const reason = (advanceEvent.payload as any)?.reason;
 
+  const emitTurnEnded = combat.phase !== "END";
   const turnEnded: DomainEvent = {
     type: "TURN_ENDED",
     payload: {
@@ -427,10 +574,10 @@ function buildAdvanceTurnDerivedEvents(
   const order = combat.initiative;
   const combatOver = isCombatOver(snapshot);
   if (combatOver.over) {
-    return [
-      turnEnded,
-      { type: "COMBAT_ENDED", payload: { winningFactionId: combatOver.winningFactionId } },
-    ];
+    const out: DomainEvent[] = [];
+    if (emitTurnEnded) out.push(turnEnded);
+    out.push({ type: "COMBAT_ENDED", payload: { winningFactionId: combatOver.winningFactionId } });
+    return out;
   }
 
   const start = combat.cursor;
@@ -461,7 +608,10 @@ function buildAdvanceTurnDerivedEvents(
     payload: { entityId: nextEntityId, round: nextRound },
   };
 
-  return [turnEnded, turnStarted];
+  const out: DomainEvent[] = [];
+  if (emitTurnEnded) out.push(turnEnded);
+  out.push(turnStarted);
+  return out;
 }
 
 function buildSkipDeadDerivedEvents(snapshot: Snapshot): DomainEvent[] {
@@ -567,4 +717,74 @@ function applyAutoEndCombat(snapshot: Snapshot, toPersist: DomainEvent[]): Snaps
   const next = reduce(snapshot, [ev]);
   toPersist.push(ev);
   return next;
+}
+
+function isCombatReady(snapshot: Snapshot, actorId: string): boolean {
+  const phase = snapshot.combat.phase === "ACTION" ? "ACTION_WINDOW" : snapshot.combat.phase;
+  const actionUsed =
+    snapshot.combat.action_used ??
+    ((snapshot.combat.turn_actions_used ?? 0) >= 1);
+  const movementRemaining = snapshot.combat.movement_remaining ?? 6;
+  return (
+    snapshot.mode === "COMBAT" &&
+    snapshot.combat.active === true &&
+    phase === "ACTION_WINDOW" &&
+    snapshot.combat.active_entity === actorId &&
+    Array.isArray(snapshot.combat.initiative) &&
+    snapshot.combat.initiative.length >= 2 &&
+    Array.isArray(snapshot.combat.initiative_entries) &&
+    snapshot.combat.initiative_entries.length >= 2 &&
+    actionUsed === false &&
+    movementRemaining === 6
+  );
+}
+
+function normalizeIncomingEvent(event: DomainEvent, snapshot: Snapshot): DomainEvent {
+  if (event.type === "ACTION_PROPOSED") {
+    const p = (event.payload ?? {}) as any;
+    const actorEntityId =
+      p.actorEntityId ??
+      p.actor_entity_id ??
+      p.actor_entity ??
+      p.actorId ??
+      p.actor?.entityId;
+    const actionType = p.actionType ?? p.action?.type;
+    const destination = p.destination ?? p.action?.destination;
+    const targetEntityId = p.targetEntityId ?? p.action?.targetEntityId;
+
+    if (!actorEntityId && !actionType && destination === undefined && targetEntityId === undefined) {
+      return event;
+    }
+
+    return {
+      ...event,
+      payload: {
+        actorEntityId,
+        actionType,
+        destination,
+        targetEntityId,
+      },
+    } as DomainEvent;
+  }
+
+  if (event.type === "ADVANCE_TURN") {
+    const p = (event.payload ?? {}) as any;
+    const actorEntityId =
+      p.actorEntityId ??
+      p.entityId ??
+      p.entity_id ??
+      p.actor_entity ??
+      p.actorEntity ??
+      snapshot.combat?.active_entity;
+    if (!actorEntityId) return event;
+    return {
+      ...event,
+      payload: {
+        actorEntityId,
+        reason: p.reason,
+      },
+    } as DomainEvent;
+  }
+
+  return event;
 }

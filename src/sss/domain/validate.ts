@@ -152,8 +152,13 @@ export function validateEvent(snapshot: Snapshot, event: DomainEvent): void {
       const { actorEntityId, actionType, destination, targetEntityId } = event.payload;
       if (!actorEntityId) throw new ValidationError("actorEntityId is required");
       if (!snapshot.entities[actorEntityId]) throw new ValidationError(`actor not found: ${actorEntityId}`);
-      if (actionType !== "MOVE" && actionType !== "ATTACK" && actionType !== "ROLL_INITIATIVE") {
-        throw new ValidationError("actionType must be MOVE, ATTACK, or ROLL_INITIATIVE");
+      if (
+        actionType !== "MOVE" &&
+        actionType !== "ATTACK" &&
+        actionType !== "PASS" &&
+        actionType !== "ROLL_INITIATIVE"
+      ) {
+        throw new ValidationError("actionType must be MOVE, ATTACK, PASS, or ROLL_INITIATIVE");
       }
       if (actionType === "MOVE") {
         if (!destination) throw new ValidationError("destination is required for MOVE");
@@ -172,13 +177,18 @@ export function validateEvent(snapshot: Snapshot, event: DomainEvent): void {
       const { actorEntityId, actionType, outcomes } = event.payload;
       if (!actorEntityId) throw new ValidationError("actorEntityId is required");
       if (!snapshot.entities[actorEntityId]) throw new ValidationError(`actor not found: ${actorEntityId}`);
-      if (actionType !== "MOVE" && actionType !== "ATTACK" && actionType !== "ROLL_INITIATIVE") {
-        throw new ValidationError("actionType must be MOVE, ATTACK, or ROLL_INITIATIVE");
+      if (
+        actionType !== "MOVE" &&
+        actionType !== "ATTACK" &&
+        actionType !== "PASS" &&
+        actionType !== "ROLL_INITIATIVE"
+      ) {
+        throw new ValidationError("actionType must be MOVE, ATTACK, PASS, or ROLL_INITIATIVE");
       }
       if (!Array.isArray(outcomes)) {
         throw new ValidationError("outcomes must be an array");
       }
-      if (outcomes.length === 0 && actionType !== "ATTACK") {
+      if (outcomes.length === 0 && actionType !== "ATTACK" && actionType !== "PASS") {
         throw new ValidationError("outcomes must be a non-empty array");
       }
       for (const o of outcomes) {
@@ -220,6 +230,15 @@ export function validateEvent(snapshot: Snapshot, event: DomainEvent): void {
   if (snapshot.mode !== "COMBAT") throw new ValidationError("ADVANCE_TURN only allowed in COMBAT");
   if (!snapshot.combat.active) throw new ValidationError("ADVANCE_TURN only allowed when combat is active");
   if (snapshot.combat.initiative.length === 0) throw new ValidationError("initiative is empty");
+  const phase = snapshot.combat.phase === "ACTION" ? "ACTION_WINDOW" : snapshot.combat.phase;
+  const actionUsed =
+    snapshot.combat.action_used ??
+    ((snapshot.combat.turn_actions_used ?? 0) >= 1);
+  if (event.version == null) {
+    if (!(phase === "END" || (phase === "ACTION_WINDOW" && actionUsed === true))) {
+      throw new ValidationError("ADVANCE_TURN denied: must be END or action_used=true");
+    }
+  }
   // Enforce explicit actor for new events (version undefined). Allow legacy events on replay.
   if (event.version == null && !actorEntityId) {
     throw new ValidationError("actorEntityId is required");

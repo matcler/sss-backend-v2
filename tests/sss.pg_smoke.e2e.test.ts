@@ -5,7 +5,7 @@ import { SssRepository } from "../src/sss/db/repository";
 import { SssService } from "../src/sss/service/sss.service";
 import { allowAllRuleEngine } from "../src/sss/rule-engine/allowAllRuleEngine";
 import { ContractRuleEngineGateway } from "../src/sss/rule-engine/contractRuleEngineGateway";
-import { ruleEngine } from "sss-rule-engine";
+import { ruleEngine } from "../src/sss/rule-engine/localContractRuleEngine";
 import { reduce } from "../src/sss/domain/reducer";
 import { makeInitialSnapshot } from "../src/sss/domain/snapshot";
 import {

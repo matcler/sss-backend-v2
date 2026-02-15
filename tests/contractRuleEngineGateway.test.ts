@@ -12,9 +12,11 @@ function makeBaseSnapshot(overrides?: Partial<Snapshot>): Snapshot {
     mode: "COMBAT",
     combat: {
       active: true,
-      phase: "ACTION", // SSS: START | ACTION | END
+      phase: "ACTION_WINDOW", // SSS: START | ACTION_WINDOW | END
       active_entity: "e1",
       initiative: [{ entity_id: "e1" }, { entity_id: "e2" }],
+      action_used: false,
+      movement_remaining: 6,
       turn_actions_used: 0,
     },
     entities: {
@@ -83,6 +85,99 @@ describe("ContractRuleEngineGateway", () => {
     expect(reSnap.combat.activeEntityId).toBe("e1");
     expect(reEv.type).toBe("ADVANCE_TURN");
     expect(reEv.actorEntityId).toBe("e1");
+  });
+
+  test("ADVANCE_TURN mapping accepts actor aliases (entity_id)", () => {
+    const engine: RuleEngine = {
+      evaluate: vi.fn((): ReDecision => ({ allowed: true } as const)),
+    };
+    const gw = new ContractRuleEngineGateway(engine);
+    const snap = makeBaseSnapshot();
+
+    const ev: DomainEvent = {
+      type: "ADVANCE_TURN",
+      payload: { entity_id: "e1" },
+    } as any;
+
+    const decision = gw.evaluate(snap, ev);
+    expect(decision.allowed).toBe(true);
+    expect(engine.evaluate).toHaveBeenCalledTimes(1);
+
+    const [, reEv] = (engine.evaluate as any).mock.calls[0];
+    expect(reEv.type).toBe("ADVANCE_TURN");
+    expect(reEv.actorEntityId).toBe("e1");
+  });
+
+  test("ACTION_PROPOSED PASS is mapped and forwarded", () => {
+    const engine: RuleEngine = {
+      evaluate: vi.fn((): ReDecision => ({ allowed: true } as const)),
+    };
+    const gw = new ContractRuleEngineGateway(engine);
+    const snap = makeBaseSnapshot();
+
+    const ev: DomainEvent = {
+      type: "ACTION_PROPOSED",
+      payload: { actorEntityId: "e1", actionType: "PASS" },
+    } as any;
+
+    const decision = gw.evaluate(snap, ev);
+    expect(decision.allowed).toBe(true);
+    expect(engine.evaluate).toHaveBeenCalledTimes(1);
+
+    const [, reEv] = (engine.evaluate as any).mock.calls[0];
+    expect(reEv.type).toBe("ACTION_PROPOSED");
+    expect(reEv.actorEntityId).toBe("e1");
+    expect(reEv.payload.actionType).toBe("PASS");
+  });
+
+  test("ACTION_PROPOSED supports nested action.type payload shape", () => {
+    const engine: RuleEngine = {
+      evaluate: vi.fn((): ReDecision => ({ allowed: true } as const)),
+    };
+    const gw = new ContractRuleEngineGateway(engine);
+    const snap = makeBaseSnapshot();
+
+    const ev: DomainEvent = {
+      type: "ACTION_PROPOSED",
+      payload: {
+        actorEntityId: "e1",
+        action: { type: "PASS" },
+      },
+    } as any;
+
+    const decision = gw.evaluate(snap, ev);
+    expect(decision.allowed).toBe(true);
+    expect(engine.evaluate).toHaveBeenCalledTimes(1);
+
+    const [, reEv] = (engine.evaluate as any).mock.calls[0];
+    expect(reEv.type).toBe("ACTION_PROPOSED");
+    expect(reEv.actorEntityId).toBe("e1");
+    expect(reEv.payload.actionType).toBe("PASS");
+  });
+
+  test("ACTION_PROPOSED supports actor_entity alias", () => {
+    const engine: RuleEngine = {
+      evaluate: vi.fn((): ReDecision => ({ allowed: true } as const)),
+    };
+    const gw = new ContractRuleEngineGateway(engine);
+    const snap = makeBaseSnapshot();
+
+    const ev: DomainEvent = {
+      type: "ACTION_PROPOSED",
+      payload: {
+        actor_entity: "e1",
+        action: { type: "PASS" },
+      },
+    } as any;
+
+    const decision = gw.evaluate(snap, ev);
+    expect(decision.allowed).toBe(true);
+    expect(engine.evaluate).toHaveBeenCalledTimes(1);
+
+    const [, reEv] = (engine.evaluate as any).mock.calls[0];
+    expect(reEv.type).toBe("ACTION_PROPOSED");
+    expect(reEv.actorEntityId).toBe("e1");
+    expect(reEv.payload.actionType).toBe("PASS");
   });
 
   test("events not in the gated set are allowed by default and do not call the contract engine", () => {

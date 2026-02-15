@@ -60,6 +60,16 @@ describe("E2E: ADVANCE_TURN via SssService.appendEvents + InMemory repo", () => 
 
     state = await sss.appendEvents(session_id, {
       expected_version: state.meta.version,
+      events: [
+        {
+          type: "ACTION_PROPOSED",
+          payload: { actorEntityId: activeEntity, actionType: "PASS" },
+        },
+      ],
+    });
+
+    state = await sss.appendEvents(session_id, {
+      expected_version: state.meta.version,
       events: [{ type: "ADVANCE_TURN", payload: { actorEntityId: activeEntity } }],
     });
 
@@ -129,7 +139,6 @@ describe("E2E: ADVANCE_TURN via SssService.appendEvents + InMemory repo", () => 
     ).rejects.toThrow(/version (mismatch|conflict)/i);
   });
 });
-
 
 
 

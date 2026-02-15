@@ -21,7 +21,11 @@ export function mapSnapshot(snapshot: SssSnapshot): ReSnapshot {
       phase: mapPhase(snapshot.combat?.phase, initiativeSet),
       activeEntityId: snapshot.combat?.active_entity ?? undefined,
       initiativeSet,
-      turnActionsUsed: snapshot.combat?.turn_actions_used ?? 0,
+      turnActionsUsed: snapshot.combat?.turn_actions_used,
+      actionUsed:
+        snapshot.combat?.action_used ??
+        ((snapshot.combat?.turn_actions_used ?? 0) >= 1),
+      movementRemaining: snapshot.combat?.movement_remaining ?? 6,
     },
     entities: mapEntities(snapshot),
   };
@@ -34,9 +38,9 @@ function mapMode(mode: Mode): "COMBAT" | "SCENE" {
 function mapPhase(
   phase: Snapshot["combat"]["phase"],
   initiativeSet: boolean
-): "INIT" | "ACTION" | "END" {
-  if (phase === "START") return initiativeSet ? "ACTION" : "INIT";
-  if (phase === "ACTION") return "ACTION";
+): "INIT" | "ACTION_WINDOW" | "END" {
+  if (phase === "START") return initiativeSet ? "ACTION_WINDOW" : "INIT";
+  if (phase === "ACTION" || phase === "ACTION_WINDOW") return "ACTION_WINDOW";
   return "END";
 }
 

@@ -13,6 +13,14 @@ function linkAdj(adjacency: Record<ZoneId, ZoneId[]>, a: ZoneId, b: ZoneId) {
   adjacency[b] = uniq([...(adjacency[b] ?? []), a]);
 }
 
+function manhattan(from: { x: number; y: number }, to: { x: number; y: number }): number {
+  return Math.abs(from.x - to.x) + Math.abs(from.y - to.y);
+}
+
+function normalizePhase(phase: Snapshot["combat"]["phase"]): Snapshot["combat"]["phase"] {
+  return phase === "ACTION" ? "ACTION_WINDOW" : phase;
+}
+
 export function applyEvent(snapshot: Snapshot, event: DomainEvent): Snapshot {
   // Clone shallow (we mutate in place after structuredClone fallback)
 const sc = (globalThis as any).structuredClone as undefined | (<T>(v: T) => T);
@@ -148,18 +156,26 @@ const next: Snapshot =
     }
 
     case "ACTION_RESOLVED": {
-      if (
-        next.mode === "COMBAT" &&
-        next.combat.active === true &&
-        (event.payload.actionType === "MOVE" || event.payload.actionType === "ATTACK")
-      ) {
-        next.combat.turn_actions_used =
-          (next.combat.turn_actions_used ?? 0) + 1;
-      }
+      const actorBefore = next.entities[event.payload.actorEntityId];
+      const actorPosBefore = actorBefore?.position;
+      next.combat.phase = normalizePhase(next.combat.phase);
 
       for (const outcome of event.payload.outcomes) {
         switch (outcome.type) {
           case "MOVE_APPLIED": {
+            const from =
+              outcome.entityId === event.payload.actorEntityId
+                ? actorPosBefore
+                : next.entities[outcome.entityId].position;
+            if (from) {
+              const cost = manhattan(from, outcome.to);
+              if (cost > 0) {
+                next.combat.movement_remaining = Math.max(
+                  0,
+                  (next.combat.movement_remaining ?? 6) - cost
+                );
+              }
+            }
             next.entities[outcome.entityId].position = outcome.to;
             break;
           }
@@ -172,6 +188,19 @@ const next: Snapshot =
             const _exhaustive: never = outcome;
             return _exhaustive;
           }
+        }
+      }
+      if (next.mode === "COMBAT" && next.combat.active === true) {
+        if (event.payload.actionType === "ATTACK") {
+          next.combat.action_used = true;
+          next.combat.turn_actions_used = 1;
+          next.combat.phase = "ACTION_WINDOW";
+        } else if (event.payload.actionType === "PASS") {
+          next.combat.action_used = true;
+          next.combat.turn_actions_used = 1;
+          next.combat.phase = "END";
+        } else if (event.payload.actionType === "MOVE") {
+          next.combat.phase = "ACTION_WINDOW";
         }
       }
       setMetaVersion(next, event);
@@ -196,7 +225,9 @@ const next: Snapshot =
       if (typeof round === "number") {
         next.combat.round = round;
       }
-      next.combat.phase = "ACTION";
+      next.combat.phase = "ACTION_WINDOW";
+      next.combat.action_used = false;
+      next.combat.movement_remaining = 6;
       next.combat.turn_actions_used = 0;
       setMetaVersion(next, event);
       return next;
@@ -216,7 +247,9 @@ const next: Snapshot =
       next.combat.initiative = [];
       next.combat.cursor = 0;
       next.combat.active_entity = null;
-      next.combat.phase = "ACTION";
+      next.combat.phase = "START";
+      next.combat.action_used = false;
+      next.combat.movement_remaining = 6;
       next.combat.turn_actions_used = 0;
       setMetaVersion(next, event);
       return next;
@@ -239,6 +272,8 @@ const next: Snapshot =
         next.combat.active_entity = legacyOrder[0] ?? null;
         next.combat.phase = "START";
         next.combat.active = true;
+        next.combat.action_used = false;
+        next.combat.movement_remaining = 6;
         next.combat.turn_actions_used = 0;
         setMetaVersion(next, event);
         return next;
@@ -281,6 +316,8 @@ const next: Snapshot =
       next.combat.active_entity = order[0] ?? null;
       next.combat.phase = "START";
       next.combat.active = true;
+      next.combat.action_used = false;
+      next.combat.movement_remaining = 6;
       next.combat.turn_actions_used = 0;
       setMetaVersion(next, event);
       return next;
@@ -292,6 +329,8 @@ const next: Snapshot =
       next.combat.cursor = 0;
       next.combat.active_entity = null;
       next.combat.phase = "END";
+      next.combat.action_used = false;
+      next.combat.movement_remaining = 0;
       next.combat.turn_actions_used = 0;
       setMetaVersion(next, event);
       return next;

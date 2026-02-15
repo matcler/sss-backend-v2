@@ -1,5 +1,5 @@
 /**
- * RE Contract — v0.19.1 (FROZEN MVP)
+ * RE Contract — v0.20.0 (FROZEN MVP)
  * Scope: allow Dev1 (SSS) + Dev2 (Rule Engine) to work in parallel with a stable boundary.
  *
  * GOLD RULES (contractual):
@@ -31,7 +31,7 @@ export type ReDecision =
       code: ReasonCode;
       /**
        * Optional, non-breaking, future-proof.
-       * Intended for UI/AI explanations (e.g. {"expectedPhase":"ACTION"}).
+       * Intended for UI/AI explanations (e.g. {"expectedPhase":"ACTION_WINDOW"}).
        */
       details?: Record<string, unknown>;
     };
@@ -44,6 +44,7 @@ export enum ReasonCode {
   ACTIONS_EXHAUSTED = "ACTIONS_EXHAUSTED",
   ACTOR_DEAD = "ACTOR_DEAD",
   INVALID_MOVE = "INVALID_MOVE",
+  MOVEMENT_EXHAUSTED = "MOVEMENT_EXHAUSTED",
   TARGET_NOT_ADJACENT = "TARGET_NOT_ADJACENT",
   UNKNOWN_EVENT = "UNKNOWN_EVENT",
 }
@@ -53,7 +54,7 @@ export enum ReasonCode {
  *  ========================= */
 
 export type ReMode = "COMBAT" | "SCENE";
-export type RePhase = "INIT" | "ACTION" | "END";
+export type RePhase = "INIT" | "ACTION_WINDOW" | "ACTION" | "END";
 
 export interface ReSnapshot {
   /** High-level mode switch. */
@@ -72,6 +73,8 @@ export interface ReSnapshot {
 
     /** Actions used by the active entity in the current turn. */
     turnActionsUsed?: number;
+    actionUsed?: boolean;
+    movementRemaining?: number;
   };
 
   /**
@@ -136,7 +139,7 @@ export interface ReActionProposed extends ReEventBase {
  *  ACTION_PROPOSED payload (MVP)
  *  ========================= */
 
-export type ActionType = "MOVE" | "ATTACK";
+export type ActionType = "MOVE" | "ATTACK" | "PASS";
 
 export interface ActionProposedPayload {
   actionType: ActionType;
